@@ -2,7 +2,7 @@ name: Weibo Super Topic Sign
 
 on:
   schedule:
-    # GitHub Actions uses UTC. 09:00 UTC = 17:00 Asia/Shanghai.
+    # GitHub Actions uses UTC. 00:00 UTC = 08:00 Asia/Shanghai.
     - cron: "0 0 * * *"
   workflow_dispatch:
 
@@ -23,8 +23,15 @@ jobs:
           WEIBO_COOKIE: ${{ secrets.WEIBO_COOKIE }}
           WEIBO_SUPERTOPIC_URLS: ${{ secrets.WEIBO_SUPERTOPIC_URLS }}
         run: |
-          node <<'NODE'
+          node --input-type=commonjs <<'NODE'
           const { chromium } = require("playwright");
+
+          main().catch((error) => {
+            console.error(error.stack || error.message);
+            process.exit(1);
+          });
+
+          async function main() {
 
           const cookieText = process.env.WEIBO_COOKIE || "";
           const urls = (process.env.WEIBO_SUPERTOPIC_URLS || "")
@@ -86,6 +93,7 @@ jobs:
           }
 
           await browser.close();
+          }
 
           function parseCookies(text) {
             return text
