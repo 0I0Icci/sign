@@ -1,0 +1,114 @@
+name: Weibo Super Topic Sign
+
+on:
+  schedule:
+    # GitHub Actions uses UTC. 01:00 UTC = 09:00 Asia/Shanghai.
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Install Playwright
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install chromium --with-deps
+
+      - name: Sign in Weibo super topics
+        env:
+          WEIBO_COOKIE: ${{ secrets.WEIBO_COOKIE }}
+          WEIBO_SUPERTOPIC_URLS: ${{ secrets.WEIBO_SUPERTOPIC_URLS }}
+        run: |
+          node <<'NODE'
+          const { chromium } = require("playwright");
+
+          const cookieText = process.env.WEIBO_COOKIE || "";
+          const urls = (process.env.WEIBO_SUPERTOPIC_URLS || "")
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean);
+
+          if (!cookieText) {
+            throw new Error("Missing secret: WEIBO_COOKIE");
+          }
+          if (!urls.length) {
+            throw new Error("Missing secret: WEIBO_SUPERTOPIC_URLS");
+          }
+
+          const browser = await chromium.launch({ headless: true });
+          const context = await browser.newContext({
+            locale: "zh-CN",
+            timezoneId: "Asia/Shanghai"
+          });
+
+          await context.addCookies(parseCookies(cookieText));
+          const page = await context.newPage();
+          page.setDefaultTimeout(20000);
+
+          for (const url of urls) {
+            console.log(`Opening ${url}`);
+            await page.goto(url, { waitUntil: "domcontentloaded" });
+            await page.waitForLoadState("networkidle").catch(() => {});
+
+            const alreadySigned = page.getByText(/\u5df2\u7b7e\u5230|\u8fde\u7eed\u7b7e\u5230|\u4eca\u65e5\u5df2\u7b7e/).first();
+            if (await visible(alreadySigned)) {
+              console.log(`${url}: already signed`);
+              continue;
+            }
+
+            const signInText = "\u7b7e\u5230";
+            const signButtons = [
+              page.getByRole("button", { name: /\u7b7e\u5230/ }).first(),
+              page.getByText(/^\u7b7e\u5230$/).first(),
+              page.locator(`[aria-label*="${signInText}"]`).first(),
+              page.locator(`text=${signInText}`).first()
+            ];
+
+            let clicked = false;
+            for (const button of signButtons) {
+              if (await visible(button)) {
+                await button.click();
+                clicked = true;
+                await page.waitForTimeout(2000);
+                break;
+              }
+            }
+
+            if (!clicked) {
+              throw new Error(`${url}: could not find sign button`);
+            }
+
+            console.log(`${url}: sign action clicked`);
+          }
+
+          await browser.close();
+
+          function parseCookies(text) {
+            return text
+              .split(";")
+              .map((item) => item.trim())
+              .filter(Boolean)
+              .map((item) => {
+                const index = item.indexOf("=");
+                return {
+                  name: item.slice(0, index),
+                  value: item.slice(index + 1),
+                  domain: ".weibo.com",
+                  path: "/"
+                };
+              })
+              .filter((cookie) => cookie.name && cookie.value);
+          }
+
+          async function visible(locator) {
+            try {
+              return await locator.isVisible({ timeout: 1500 });
+            } catch {
+              return false;
+            }
+          }
+          NODE
