@@ -2,7 +2,7 @@ name: Weibo Super Topic Sign
 
 on:
   schedule:
-    # GitHub Actions uses UTC. 01:00 UTC = 09:00 Asia/Shanghai.
+    # GitHub Actions uses UTC. 09:00 UTC = 17:00 Asia/Shanghai.
     - cron: "0 9 * * *"
   workflow_dispatch:
 
