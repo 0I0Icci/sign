@@ -98,3 +98,106 @@ async function signTopic(page, url, index) {
     await page.waitForLoadState("networkidle").catch(() => {});
 
     if (await hasSignedState(page)) {
+      console.log(`${url}: signed successfully`);
+      return;
+    }
+  }
+
+  await saveDebug(page, index, "sign-not-confirmed");
+  throw new Error(`${url}: sign action was not completed or could not be confirmed.`);
+}
+
+async function signByApi(page, referer, topicId) {
+  const response = await page.context().request.get("https://weibo.com/p/aj/general/button", {
+    headers: {
+      "referer": referer,
+      "x-requested-with": "XMLHttpRequest"
+    },
+    params: {
+      ajwvr: "6",
+      api: "http://i.huati.weibo.com/aj/super/checkin",
+      texta: "\u7b7e\u5230",
+      textb: "\u5df2\u7b7e\u5230",
+      status: "0",
+      id: topicId,
+      __rnd: String(Date.now())
+    }
+  }).catch((error) => {
+    return { error };
+  });
+
+  if (response.error) {
+    return { ok: false, message: response.error.message };
+  }
+
+  const text = await response.text();
+  let data = null;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return { ok: false, message: `non-JSON response: ${text.slice(0, 200)}` };
+  }
+
+  const code = String(data.code || data?.data?.code || "");
+  const message = data.msg || data?.data?.msg || JSON.stringify(data).slice(0, 200);
+  if (code === "100000") {
+    return { ok: true, message: `signed successfully by API: ${message}` };
+  }
+  if (code === "382004" || /\u5df2\u7b7e\u5230|\u5df2\u7ecf\u7b7e\u5230|\u4eca\u65e5\u5df2\u7b7e/.test(message)) {
+    return { ok: true, message: `already signed by API: ${message}` };
+  }
+
+  return { ok: false, message: `code=${code || "unknown"} ${message}` };
+}
+
+async function hasSignedState(page) {
+  const signedText = page.getByText(/\u5df2\u7b7e\u5230|\u8fde\u7eed\u7b7e\u5230|\u4eca\u65e5\u5df2\u7b7e|\u7b7e\u5230\u6210\u529f/).first();
+  return visible(signedText);
+}
+
+async function isLoginPage(page) {
+  const loginText = page.getByText(/\u767b\u5f55|\u77ed\u4fe1\u767b\u5f55|\u626b\u7801\u767b\u5f55/).first();
+  const passwordInput = page.locator('input[type="password"]').first();
+  return (await visible(loginText)) || (await visible(passwordInput));
+}
+
+async function saveDebug(page, index, reason) {
+  const safeReason = reason.replace(/[^a-z0-9_-]/gi, "_");
+  await page.screenshot({
+    path: `artifacts/sign-${index}-${safeReason}.png`,
+    fullPage: true
+  }).catch(() => {});
+
+  const html = await page.content().catch(() => "");
+  await writeFile(`artifacts/sign-${index}-${safeReason}.html`, html).catch(() => {});
+}
+
+function parseCookies(text) {
+  return text
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const index = item.indexOf("=");
+      return {
+        name: item.slice(0, index),
+        value: item.slice(index + 1),
+        domain: ".weibo.com",
+        path: "/"
+      };
+    })
+    .filter((cookie) => cookie.name && cookie.value);
+}
+
+function extractSuperTopicId(value) {
+  const match = String(value || "").match(/100808[0-9a-zA-Z]+/);
+  return match ? match[0] : "";
+}
+
+async function visible(locator) {
+  try {
+    return await locator.isVisible({ timeout: 1500 });
+  } catch {
+    return false;
+  }
+}
