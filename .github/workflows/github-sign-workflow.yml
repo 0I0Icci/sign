@@ -3,29 +3,29 @@ name: Weibo Super Topic Sign
 on:
   schedule:
     # GitHub Actions uses UTC. 00:00 UTC = 08:00 Asia/Shanghai.
-    - cron: "01 03 * * *"
+    - cron: "10 03 * * *"
   workflow_dispatch:
 
 jobs:
   sign:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-ms-playwright-${{ hashFiles('package-lock.json', 'package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-ms-playwright-
+
       - name: Install Playwright
         run: |
           npm init -y
-          npm install playwright
-          npx playwright install chromium --with-deps
-
-      - name: Sign in Weibo super topics
-        env:
-          WEIBO_COOKIE: ${{ secrets.WEIBO_COOKIE }}
-          WEIBO_SUPERTOPIC_URLS: ${{ secrets.WEIBO_SUPERTOPIC_URLS }}
-        run: node scripts/sign-weibo.mjs
 
       - name: Upload debug artifacts
         if: failure()
