@@ -53,13 +53,17 @@ async function signTopic(page, url, index) {
     throw new Error(`${url}: login is not valid. Update WEIBO_COOKIE.`);
   }
 
-  if (await hasSignedState(page)) {
-    console.log(`${url}: already signed`);
+  const topButtonText = await getTopSignButtonText(page);
+  console.log(`${url}: top sign button text: ${topButtonText || "(not found)"}`);
+  if (isSignedButtonText(topButtonText)) {
+    console.log(`${url}: already signed by top button state`);
     return;
   }
 
   if (await clickTopSignButton(page, url)) {
-    if (await hasSignedState(page)) {
+    const afterClickText = await getTopSignButtonText(page);
+    console.log(`${url}: top sign button text after click: ${afterClickText || "(not found)"}`);
+    if (isSignedButtonText(afterClickText) || await hasSignedState(page)) {
       console.log(`${url}: signed successfully by top sign button`);
       return;
     }
@@ -145,6 +149,31 @@ async function clickTopSignButton(page, url) {
   }
 
   return false;
+}
+
+async function getTopSignButtonText(page) {
+  const signInText = "\u7b7e\u5230";
+  const followedText = "\u5df2\u5173\u6ce8";
+  const selectors = [
+    `xpath=//*[contains(normalize-space(.), "${followedText}")]/following::*[(self::button or self::a or @role="button" or contains(@class, "woo-button")) and (contains(normalize-space(.), "${signInText}") or contains(normalize-space(.), "\u5df2\u7b7e"))][1]`,
+    `xpath=//*[normalize-space(.)="${signInText}" and (self::button or self::a or @role="button" or contains(@class, "woo-button"))][1]`,
+    `button:has-text("${signInText}")`,
+    `[role="button"]:has-text("${signInText}")`,
+    `a:has-text("${signInText}")`
+  ];
+
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    if (await visible(locator)) {
+      return (await locator.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+    }
+  }
+
+  return "";
+}
+
+function isSignedButtonText(text) {
+  return /\u5df2\u7b7e\u5230|\u4eca\u65e5\u5df2\u7b7e|\u8fde\u7eed\u7b7e\u5230|\u7b7e\u5230\u6210\u529f/.test(text || "");
 }
 
 async function signByApi(page, referer, topicId) {
