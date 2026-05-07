@@ -58,6 +58,20 @@ async function signTopic(page, url, index) {
     return;
   }
 
+   const topicId = extractSuperTopicId(url) || extractSuperTopicId(page.url());
+  if (topicId) {
+    const apiResult = await signByApi(page, url, topicId);
+    if (apiResult.ok) {
+      console.log(`${url}: ${apiResult.message}`);
+      return;
+    }
+    console.log(`${url}: API sign did not complete: ${apiResult.message}`);
+  } else {
+    console.log(`${url}: could not extract super topic id; trying page click fallback`);
+  }
+
+  await page.mouse.wheel(0, -1200).catch(() => {});
+  await page.waitForTimeout(800);
   await page.mouse.wheel(0, -1200).catch(() => {});
   await page.waitForTimeout(800);
 
