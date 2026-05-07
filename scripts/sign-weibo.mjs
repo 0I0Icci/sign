@@ -58,6 +58,14 @@ async function signTopic(page, url, index) {
     return;
   }
 
+  if (await clickTopSignButton(page, url)) {
+    if (await hasSignedState(page)) {
+      console.log(`${url}: signed successfully by top sign button`);
+      return;
+    }
+    console.log(`${url}: top sign button was clicked, but signed state was not confirmed`);
+  }
+
   const topicId = extractSuperTopicId(url) || extractSuperTopicId(page.url());
   if (topicId) {
     console.log(`${url}: extracted super topic id ${topicId}`);
@@ -106,6 +114,37 @@ async function signTopic(page, url, index) {
 
   await saveDebug(page, index, "sign-not-confirmed");
   throw new Error(`${url}: sign action was not completed or could not be confirmed.`);
+}
+
+async function clickTopSignButton(page, url) {
+  const signInText = "\u7b7e\u5230";
+  const followedText = "\u5df2\u5173\u6ce8";
+  const selectors = [
+    `xpath=//*[contains(normalize-space(.), "${followedText}")]/following::*[(self::button or self::a or @role="button" or contains(@class, "woo-button")) and contains(normalize-space(.), "${signInText}")][1]`,
+    `xpath=//*[normalize-space(.)="${signInText}" and (self::button or self::a or @role="button" or contains(@class, "woo-button"))][1]`,
+    `xpath=//*[normalize-space(.)="${signInText}"]/ancestor::*[self::button or self::a or @role="button" or contains(@class, "woo-button")][1]`,
+    `button:has-text("${signInText}")`,
+    `[role="button"]:has-text("${signInText}")`,
+    `a:has-text("${signInText}")`
+  ];
+
+  for (const selector of selectors) {
+    const button = page.locator(selector).first();
+    if (!(await visible(button))) {
+      continue;
+    }
+
+    console.log(`${url}: clicking top sign button with selector ${selector}`);
+    await button.scrollIntoViewIfNeeded().catch(() => {});
+    await button.click({ timeout: 5000 }).catch(async () => {
+      await button.click({ force: true, timeout: 5000 });
+    });
+    await page.waitForTimeout(5000);
+    await page.waitForLoadState("networkidle").catch(() => {});
+    return true;
+  }
+
+  return false;
 }
 
 async function signByApi(page, referer, topicId) {
