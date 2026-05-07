@@ -60,6 +60,7 @@ async function signTopic(page, url, index) {
 
   const topicId = extractSuperTopicId(url) || extractSuperTopicId(page.url());
   if (topicId) {
+    console.log(`${url}: extracted super topic id ${topicId}`);
     const apiResult = await signByApi(page, url, topicId);
     if (apiResult.ok) {
       console.log(`${url}: ${apiResult.message}`);
@@ -108,6 +109,31 @@ async function signTopic(page, url, index) {
 }
 
 async function signByApi(page, referer, topicId) {
+  const first = await callSignApi(page, referer, topicId);
+  console.log(`API response: http=${first.httpStatus} code=${first.code || "unknown"} msg=${first.message}`);
+
+  if (!first.ok) {
+    return first;
+  }
+
+  await page.waitForTimeout(1500);
+  const verify = await callSignApi(page, referer, topicId);
+  console.log(`API verify: http=${verify.httpStatus} code=${verify.code || "unknown"} msg=${verify.message}`);
+
+  if (verify.alreadySigned || first.signed) {
+    return {
+      ok: true,
+      message: first.signed ? `signed successfully by API: ${first.message}` : `already signed by API: ${verify.message}`
+    };
+  }
+
+  return {
+    ok: false,
+    message: `API returned success-like response but verification did not show signed state: ${verify.message}`
+  };
+}
+
+async function callSignApi(page, referer, topicId) {
   const response = await page.context().request.get("https://weibo.com/p/aj/general/button", {
     headers: {
       "referer": referer,
@@ -127,27 +153,35 @@ async function signByApi(page, referer, topicId) {
   });
 
   if (response.error) {
-    return { ok: false, message: response.error.message };
+    return { ok: false, httpStatus: "request-error", message: response.error.message };
   }
 
+  const httpStatus = response.status();
   const text = await response.text();
   let data = null;
   try {
     data = JSON.parse(text);
   } catch {
-    return { ok: false, message: `non-JSON response: ${text.slice(0, 200)}` };
+    return { ok: false, httpStatus, message: `non-JSON response: ${text.slice(0, 200)}` };
   }
 
   const code = String(data.code || data?.data?.code || "");
   const message = data.msg || data?.data?.msg || JSON.stringify(data).slice(0, 200);
+  const alertTitle = data?.data?.alert_title || "";
   if (code === "100000") {
-    return { ok: true, message: `signed successfully by API: ${message}` };
+    return {
+      ok: true,
+      signed: true,
+      httpStatus,
+      code,
+      message: `${message}${alertTitle ? ` ${alertTitle}` : ""}`
+    };
   }
   if (code === "382004" || /\u5df2\u7b7e\u5230|\u5df2\u7ecf\u7b7e\u5230|\u4eca\u65e5\u5df2\u7b7e/.test(message)) {
-    return { ok: true, message: `already signed by API: ${message}` };
+    return { ok: true, alreadySigned: true, httpStatus, code, message };
   }
 
-  return { ok: false, message: `code=${code || "unknown"} ${message}` };
+  return { ok: false, httpStatus, code, message };
 }
 
 async function hasSignedState(page) {
@@ -201,3 +235,4 @@ async function visible(locator) {
     return false;
   }
 }
+
