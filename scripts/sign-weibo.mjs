@@ -1,0 +1,143 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { chromium } from "playwright";
+
+await main();
+
+async function main() {
+  await mkdir("artifacts", { recursive: true });
+
+  const cookieText = process.env.WEIBO_COOKIE || "";
+  const urls = (process.env.WEIBO_SUPERTOPIC_URLS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (!cookieText) {
+    throw new Error("Missing secret: WEIBO_COOKIE");
+  }
+  if (!urls.length) {
+    throw new Error("Missing secret: WEIBO_SUPERTOPIC_URLS");
+  }
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({
+    locale: "zh-CN",
+    timezoneId: "Asia/Shanghai",
+    viewport: { width: 1365, height: 900 }
+  });
+
+  try {
+    await context.addCookies(parseCookies(cookieText));
+    const page = await context.newPage();
+    page.setDefaultTimeout(20000);
+
+    for (let index = 0; index < urls.length; index += 1) {
+      await signTopic(page, urls[index], index + 1);
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
+async function signTopic(page, url, index) {
+  console.log(`Opening ${url}`);
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForLoadState("networkidle").catch(() => {});
+  await page.waitForTimeout(2000);
+
+  console.log(`Page title: ${await page.title().catch(() => "")}`);
+  console.log(`Current URL: ${page.url()}`);
+
+  if (await isLoginPage(page)) {
+    await saveDebug(page, index, "login-required");
+    throw new Error(`${url}: login is not valid. Update WEIBO_COOKIE.`);
+  }
+
+  if (await hasSignedState(page)) {
+    console.log(`${url}: already signed`);
+    return;
+  }
+
+  await page.mouse.wheel(0, -1200).catch(() => {});
+  await page.waitForTimeout(800);
+
+  const signInText = "\u7b7e\u5230";
+  const candidates = [
+    page.getByRole("button", { name: /\u7b7e\u5230/ }).first(),
+    page.getByRole("link", { name: /\u7b7e\u5230/ }).first(),
+    page.locator(`[aria-label*="${signInText}"]`).first(),
+    page.locator(`button:has-text("${signInText}")`).first(),
+    page.locator(`a:has-text("${signInText}")`).first(),
+    page.locator(`span:has-text("${signInText}")`).first(),
+    page.locator(`div:has-text("${signInText}")`).first()
+  ];
+
+  for (const candidate of candidates) {
+    if (!(await visible(candidate))) {
+      continue;
+    }
+
+    console.log(`${url}: clicking visible sign candidate`);
+    await candidate.scrollIntoViewIfNeeded().catch(() => {});
+    await candidate.click({ timeout: 5000 }).catch(async () => {
+      await candidate.click({ force: true, timeout: 5000 });
+    });
+    await page.waitForTimeout(3000);
+    await page.waitForLoadState("networkidle").catch(() => {});
+
+    if (await hasSignedState(page)) {
+      console.log(`${url}: signed successfully`);
+      return;
+    }
+  }
+
+  await saveDebug(page, index, "sign-not-confirmed");
+  throw new Error(`${url}: sign action was not completed or could not be confirmed.`);
+}
+
+async function hasSignedState(page) {
+  const signedText = page.getByText(/\u5df2\u7b7e\u5230|\u8fde\u7eed\u7b7e\u5230|\u4eca\u65e5\u5df2\u7b7e|\u7b7e\u5230\u6210\u529f/).first();
+  return visible(signedText);
+}
+
+async function isLoginPage(page) {
+  const loginText = page.getByText(/\u767b\u5f55|\u77ed\u4fe1\u767b\u5f55|\u626b\u7801\u767b\u5f55/).first();
+  const passwordInput = page.locator('input[type="password"]').first();
+  return (await visible(loginText)) || (await visible(passwordInput));
+}
+
+async function saveDebug(page, index, reason) {
+  const safeReason = reason.replace(/[^a-z0-9_-]/gi, "_");
+  await page.screenshot({
+    path: `artifacts/sign-${index}-${safeReason}.png`,
+    fullPage: true
+  }).catch(() => {});
+
+  const html = await page.content().catch(() => "");
+  await writeFile(`artifacts/sign-${index}-${safeReason}.html`, html).catch(() => {});
+}
+
+function parseCookies(text) {
+  return text
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const index = item.indexOf("=");
+      return {
+        name: item.slice(0, index),
+        value: item.slice(index + 1),
+        domain: ".weibo.com",
+        path: "/"
+      };
+    })
+    .filter((cookie) => cookie.name && cookie.value);
+}
+
+async function visible(locator) {
+  try {
+    return await locator.isVisible({ timeout: 1500 });
+  } catch {
+    return false;
+  }
+}
