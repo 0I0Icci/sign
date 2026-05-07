@@ -3,7 +3,7 @@ name: Weibo Super Topic Sign
 on:
   schedule:
     # GitHub Actions uses UTC. 00:00 UTC = 08:00 Asia/Shanghai.
-    - cron: "21 03 * * *"
+    - cron: "40 03 * * *"
   workflow_dispatch:
 
 jobs:
@@ -26,6 +26,14 @@ jobs:
       - name: Install Playwright
         run: |
           npm init -y
+          npm install playwright
+          npx playwright install chromium --with-deps
+
+      - name: Sign in Weibo super topics
+        env:
+          WEIBO_COOKIE: ${{ secrets.WEIBO_COOKIE }}
+          WEIBO_SUPERTOPIC_URLS: ${{ secrets.WEIBO_SUPERTOPIC_URLS }}
+        run: node scripts/sign-weibo.mjs
 
       - name: Upload debug artifacts
         if: failure()
