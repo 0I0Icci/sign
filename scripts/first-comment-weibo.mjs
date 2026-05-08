@@ -3,13 +3,16 @@ import { chromium } from "playwright";
 
 const TARGET_URL = process.env.FIRST_COMMENT_SUPERTOPIC_URL || "https://weibo.com/p/1008088398ba44a36be9098c12fb747c01bf52/super_index";
 const MAX_COMMENTS = Number(process.env.FIRST_COMMENT_MAX || "4");
-const POLL_SECONDS = Number(process.env.FIRST_COMMENT_POLL_SECONDS || "60");
+const POLL_SECONDS = Number(process.env.FIRST_COMMENT_POLL_SECONDS || "5");
+const MAX_ATTEMPTS_PER_POST = Number(process.env.FIRST_COMMENT_MAX_ATTEMPTS_PER_POST || "3");
 const COMMENTS = [
   "小时候听老人常说“冬做超like夏不伤，演唱会有票我不慌”，所有title中超like最为正宗。我们的老祖宗认为冬季是个寒冷的季节，所以要在家里多做@华晨宇yu 超like为未来一年的生活打下好基础",
   "你好，我是火星的公主，不知为何流落到地球，点亮你的超like头衔，就可以助我一臂之力，等我成功返回火星，就让我的爸比火星国王封你为火星第一护法@华晨宇yu",
   "玩微博不做超辣，就如同四大名著不看红楼梦，听古典不听贝多芬，看画画不看达芬奇，说明这个人品味鉴赏和自我修养不足，他整个人的层次就卡在这里了，只能度过一个相对失败的人生。做了超辣，我的演唱会🎫自动飞到了我的手上，红酒杯也开始自己摇晃，黑胶唱片也发出了声音@华晨宇yu",
   "我们是一个健康的演唱会超辣你们没开玩笑吧好几万超辣啊算了吧你们都有好几个超辣啦少骗我我不信啊如果你们是从初中喜欢我那现在也该超辣了吧如果你们是从小学喜欢我那现在也该超辣了吧难道上大学还没做一个超辣吗你们太可怜啦还不超辣呐我要嘲笑你们啦哈哈哈哈没关系我会送你们最后一个超辣@华晨宇yu"
 ];
+
+const results = [];
 
 await main();
 
@@ -33,7 +36,8 @@ async function main() {
     const page = await context.newPage();
     page.setDefaultTimeout(20000);
 
-    const commented = new Set();
+    const completed = new Set();
+    const attempts = new Map();
     let successCount = 0;
 
     while (successCount < MAX_COMMENTS) {
@@ -54,14 +58,20 @@ async function main() {
         if (successCount >= MAX_COMMENTS) {
           break;
         }
-        if (commented.has(href)) {
+        if (completed.has(href)) {
           continue;
         }
 
-        commented.add(href);
+        const attemptCount = attempts.get(href) || 0;
+        if (attemptCount >= MAX_ATTEMPTS_PER_POST) {
+          continue;
+        }
+
+        attempts.set(href, attemptCount + 1);
         const comment = pickComment(successCount);
         const ok = await tryCommentPost(context, href, comment, successCount + 1);
         if (ok) {
+          completed.add(href);
           successCount += 1;
           console.log(`Commented ${successCount}/${MAX_COMMENTS}`);
         }
@@ -73,38 +83,43 @@ async function main() {
       }
     }
 
-    if (successCount < MAX_COMMENTS) {
-      console.log(`Finished with ${successCount}/${MAX_COMMENTS} comments.`);
-    } else {
-      console.log("Finished all first-comment attempts.");
-    }
+    console.log("Finished all first-comment attempts.");
   } finally {
+    await writeVisualIndex();
     await browser.close();
   }
 }
 
 async function collectPostLinks(page) {
   const seen = new Set();
+  const links = await page.locator("a[href]").evaluateAll((anchors) => {
+    return anchors
+      .map((anchor) => anchor.href)
+      .filter(Boolean);
+  }).catch(() => []);
 
-  for (let round = 0; round < 4 && seen.size < 16; round += 1) {
-    const links = await page.locator('a[href*="/status/"], a[href*="/detail/"]').evaluateAll((anchors) => {
-      return anchors
-        .map((anchor) => anchor.href)
-        .filter(Boolean);
-    }).catch(() => []);
-
-    for (const href of links) {
-      const clean = href.split("?")[0];
-      if (/\/(status|detail)\//.test(clean)) {
-        seen.add(clean);
-      }
+  for (const href of links) {
+    const clean = normalizePostUrl(href);
+    if (clean) {
+      seen.add(clean);
     }
-
-    await page.mouse.wheel(0, 1200);
-    await page.waitForTimeout(1200);
+    if (seen.size >= 12) {
+      break;
+    }
   }
 
   return Array.from(seen);
+}
+
+function normalizePostUrl(href) {
+  const clean = String(href || "").split("?")[0];
+  if (/\/(status|detail)\//.test(clean)) {
+    return clean;
+  }
+  if (/weibo\.com\/\d+\/[A-Za-z0-9]+$/.test(clean)) {
+    return clean;
+  }
+  return "";
 }
 
 async function tryCommentPost(context, href, comment, index) {
@@ -117,7 +132,7 @@ async function tryCommentPost(context, href, comment, index) {
     await page.waitForLoadState("networkidle").catch(() => {});
     await page.waitForTimeout(1500);
 
-    const firstCommentHint = page.getByText(/抢首评|快来抢首评|还没有评论|暂无评论|0/).first();
+    const firstCommentHint = page.getByText(/\u62a2\u9996\u8bc4|\u5feb\u6765\u62a2\u9996\u8bc4|\u8fd8\u6ca1\u6709\u8bc4\u8bba|\u6682\u65e0\u8bc4\u8bba|0/).first();
     console.log(`First-comment hint visible: ${await visible(firstCommentHint)}`);
 
     const commentInput = await openCommentInput(page);
@@ -139,8 +154,9 @@ async function tryCommentPost(context, href, comment, index) {
       return false;
     }
 
-    await page.waitForTimeout(2500);
-    console.log(`Post ${index}: comment submitted.`);
+    await page.waitForTimeout(3500);
+    await captureResult(page, href, comment, index);
+    console.log(`Post ${index}: comment submitted and captured.`);
     return true;
   } catch (error) {
     await saveDebug(page, `post-${index}-error`);
@@ -170,7 +186,7 @@ async function openCommentInput(page) {
 
   const inputSelectors = [
     'textarea[placeholder*="\u8bc4\u8bba"]',
-    'textarea',
+    "textarea",
     '[contenteditable="true"]'
   ];
 
@@ -200,9 +216,76 @@ async function clickSend(page) {
   return false;
 }
 
+async function captureResult(page, href, comment, index) {
+  await page.mouse.wheel(0, 900).catch(() => {});
+  await page.waitForTimeout(1000);
+
+  const base = `first-comment-${String(index).padStart(2, "0")}`;
+  const screenshot = `${base}.png`;
+  const html = `${base}.html`;
+  const visibleComment = await page.getByText(comment.slice(0, 24)).first().isVisible({ timeout: 1500 }).catch(() => false);
+
+  await page.screenshot({ path: `artifacts/${screenshot}`, fullPage: true }).catch(() => {});
+  await writeFile(`artifacts/${html}`, await page.content().catch(() => "")).catch(() => {});
+
+  results.push({
+    index,
+    href,
+    comment,
+    screenshot,
+    html,
+    visibleComment,
+    capturedAt: new Date().toISOString()
+  });
+}
+
+async function writeVisualIndex() {
+  const rows = results.map((item) => {
+    return `
+      <section>
+        <h2>Comment ${item.index}</h2>
+        <p><a href="${escapeHtml(item.href)}">${escapeHtml(item.href)}</a></p>
+        <p><strong>Visible after submit:</strong> ${item.visibleComment ? "yes" : "not confirmed"}</p>
+        <p><strong>Comment:</strong> ${escapeHtml(item.comment)}</p>
+        <p><a href="${escapeHtml(item.html)}">saved html</a></p>
+        <img src="${escapeHtml(item.screenshot)}" alt="comment ${item.index} screenshot">
+      </section>
+    `;
+  }).join("\n");
+
+  const html = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Weibo First Comment Visual Check</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; color: #1f2328; }
+    section { border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; margin: 16px 0; }
+    img { display: block; width: min(100%, 1200px); border: 1px solid #d0d7de; border-radius: 6px; }
+    p { line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1>Weibo First Comment Visual Check</h1>
+  <p>Captured comments: ${results.length}</p>
+  ${rows || "<p>No successful comment screenshots were captured.</p>"}
+</body>
+</html>`;
+
+  await writeFile("artifacts/index.html", html).catch(() => {});
+}
+
 function pickComment(index) {
   const shuffled = [...COMMENTS].sort(() => Math.random() - 0.5);
   return shuffled[index % shuffled.length];
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 async function isLoginPage(page) {
