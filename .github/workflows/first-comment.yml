@@ -3,7 +3,7 @@ name: Weibo First Comment
 on:
   schedule:
     # GitHub Actions uses UTC. 06:08 UTC = 14:08 Asia/Shanghai.
-    - cron: "35 16 * * *"
+    - cron: "08 6 * * *"
   workflow_dispatch:
 
 jobs:
