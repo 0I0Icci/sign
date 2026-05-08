@@ -91,24 +91,88 @@ async function main() {
 }
 
 async function collectPostLinks(page) {
-  const seen = new Set();
-  const links = await page.locator("a[href]").evaluateAll((anchors) => {
-    return anchors
-      .map((anchor) => anchor.href)
-      .filter(Boolean);
+  return page.evaluate(() => {
+    const candidates = [];
+    const seen = new Set();
+    const anchors = Array.from(document.querySelectorAll('a[href*="/status/"], a[href*="/detail/"], a[href]'));
+
+    function normalizePostUrl(href) {
+      const clean = String(href || "").split("?")[0];
+      if (/\/(status|detail)\//.test(clean)) {
+        return clean;
+      }
+      if (/weibo\.com\/\d+\/[A-Za-z0-9]+$/.test(clean)) {
+        return clean;
+      }
+      return "";
+    }
+
+    function postRootFrom(anchor) {
+      let node = anchor;
+      for (let depth = 0; node && depth < 8; depth += 1) {
+        const text = node.innerText || "";
+        if (/收藏/.test(text) && /转发/.test(text) && /赞/.test(text)) {
+          return node;
+        }
+        node = node.parentElement;
+      }
+      return anchor.closest("article") || anchor.closest('[class*="card"]') || anchor.parentElement;
+    }
+
+    function currentPostHasCommentNumber(root) {
+      if (!root) {
+        return true;
+      }
+
+      const text = root.innerText || "";
+      const lines = text
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+      for (const line of lines) {
+        if (!/评论/.test(line)) {
+          continue;
+        }
+        const compact = line.replace(/\s+/g, "");
+        if (/评论\d+/.test(compact) || /\d+评论/.test(compact)) {
+          return true;
+        }
+      }
+
+      const commentLike = Array.from(root.querySelectorAll("a, button, span, div"))
+        .filter((node) => /评论/.test(node.innerText || node.getAttribute("aria-label") || ""));
+
+      for (const node of commentLike) {
+        const text = `${node.innerText || ""} ${node.getAttribute("aria-label") || ""}`.replace(/\s+/g, "");
+        if (/评论\d+/.test(text) || /\d+评论/.test(text)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    for (const anchor of anchors) {
+      const href = normalizePostUrl(anchor.href);
+      if (!href || seen.has(href)) {
+        continue;
+      }
+
+      const root = postRootFrom(anchor);
+      if (currentPostHasCommentNumber(root)) {
+        continue;
+      }
+
+      seen.add(href);
+      candidates.push(href);
+      if (candidates.length >= 12) {
+        break;
+      }
+    }
+
+    return candidates;
   }).catch(() => []);
-
-  for (const href of links) {
-    const clean = normalizePostUrl(href);
-    if (clean) {
-      seen.add(clean);
-    }
-    if (seen.size >= 12) {
-      break;
-    }
-  }
-
-  return Array.from(seen);
 }
 
 function normalizePostUrl(href) {
@@ -132,8 +196,12 @@ async function tryCommentPost(context, href, comment, index) {
     await page.waitForLoadState("networkidle").catch(() => {});
     await page.waitForTimeout(1500);
 
-    const firstCommentHint = page.getByText(/\u62a2\u9996\u8bc4|\u5feb\u6765\u62a2\u9996\u8bc4|\u8fd8\u6ca1\u6709\u8bc4\u8bba|\u6682\u65e0\u8bc4\u8bba|0/).first();
-    console.log(`First-comment hint visible: ${await visible(firstCommentHint)}`);
+    const empty = await isCommentAreaEmpty(page);
+    console.log(`Post ${index}: comment area empty: ${empty}`);
+    if (!empty) {
+      console.log(`Post ${index}: already has comments, skipped.`);
+      return false;
+    }
 
     const commentInput = await openCommentInput(page);
     if (!commentInput) {
@@ -164,6 +232,62 @@ async function tryCommentPost(context, href, comment, index) {
     return false;
   } finally {
     await page.close();
+  }
+}
+
+async function isCommentAreaEmpty(page) {
+  await openCommentTab(page);
+  await page.waitForTimeout(1200);
+
+  const nonEmptyLocators = [
+    page.getByText(/共\s*\d+\s*条评论/).first(),
+    page.getByText(/全部评论\s*\d+/).first(),
+    page.getByText(/评论\s*\d+/).first(),
+    page.locator('[class*="comment"] [class*="item"]').first(),
+    page.locator('[class*="Comment"] [class*="item"]').first()
+  ];
+
+  for (const locator of nonEmptyLocators) {
+    if (await visible(locator)) {
+      return false;
+    }
+  }
+
+  const hasCommentRows = await page.evaluate(() => {
+    const commentKeywords = ["回复", "点赞", "来自", "分钟前", "小时前"];
+    const nodes = Array.from(document.querySelectorAll("div, li, article"));
+    return nodes.some((node) => {
+      const text = (node.innerText || "").trim();
+      if (text.length < 8 || text.length > 500) {
+        return false;
+      }
+      const keywordHits = commentKeywords.filter((keyword) => text.includes(keyword)).length;
+      const looksLikeToolbar = /收藏/.test(text) && /转发/.test(text) && /评论/.test(text) && /赞/.test(text);
+      return keywordHits >= 2 && !looksLikeToolbar;
+    });
+  }).catch(() => false);
+
+  if (hasCommentRows) {
+    return false;
+  }
+
+  return true;
+}
+
+async function openCommentTab(page) {
+  const commentText = "\u8bc4\u8bba";
+  const entries = [
+    page.getByRole("tab", { name: /\u8bc4\u8bba/ }).first(),
+    page.getByRole("button", { name: /\u8bc4\u8bba/ }).first(),
+    page.locator(`[aria-label*="${commentText}"]`).first(),
+    page.locator(`text=${commentText}`).first()
+  ];
+
+  for (const entry of entries) {
+    if (await visible(entry)) {
+      await entry.click().catch(() => {});
+      return;
+    }
   }
 }
 
