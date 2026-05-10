@@ -1,13 +1,13 @@
-name: Weibo Sign and Comment
+name: Weibo Super Topic Sign
 
 on:
   schedule:
     # GitHub Actions uses UTC. 00:00 UTC = 08:00 Asia/Shanghai.
-    - cron: "07 6 * * *"
+    - cron: "07 06 * * *"
   workflow_dispatch:
 
 jobs:
-  sign-and-comment:
+  sign:
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -29,237 +29,26 @@ jobs:
           npm install playwright
           npx playwright install chromium --with-deps
 
-      - name: Sign in second super topic and comment on four posts
+      - name: Sign in Weibo super topics
         env:
           WEIBO_COOKIE: ${{ secrets.WEIBO_COOKIE }}
           WEIBO_SUPERTOPIC_URLS: ${{ secrets.WEIBO_SUPERTOPIC_URLS }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
-          COMMENT_GENERATION_PROMPT: ${{ secrets.COMMENT_GENERATION_PROMPT }}
-        run: |
-          node --input-type=module <<'NODE'
-          import { chromium } from "playwright";
-          import { generateComments } from "./scripts/generate-comments.mjs";
+        run: node scripts/sign-weibo.mjs
 
-          main().catch((error) => {
-            console.error(error.stack || error.message);
-            process.exit(1);
-          });
+      - name: Send sign report email
+        if: always()
+        env:
+          NOTIFY_MODE: sign
+          NOTIFY_EMAIL_TO: 2948408582@qq.com
+          SMTP_HOST: smtp.qq.com
+          SMTP_PORT: "465"
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+        run: node scripts/notify.mjs
 
-          async function main() {
-            const cookieText = process.env.WEIBO_COOKIE || "";
-            const urls = splitList(process.env.WEIBO_SUPERTOPIC_URLS);
-            const targetUrl = urls[1];
-
-            if (!cookieText) {
-              throw new Error("Missing secret: WEIBO_COOKIE");
-            }
-            if (!targetUrl) {
-              throw new Error("WEIBO_SUPERTOPIC_URLS must contain at least two URLs. This workflow uses the second one.");
-            }
-
-            const generatedComments = await generateComments({ count: 4 });
-            console.log(`Generated ${generatedComments.length} comments for this run.`);
-
-            const browser = await chromium.launch({ headless: true });
-            const context = await browser.newContext({
-              locale: "zh-CN",
-              timezoneId: "Asia/Shanghai"
-            });
-
-            try {
-              await context.addCookies(parseCookies(cookieText));
-              const page = await context.newPage();
-              page.setDefaultTimeout(20000);
-
-              await openTarget(page, targetUrl);
-              await signInIfNeeded(page, targetUrl);
-              await commentOnFourPosts(page, generatedComments);
-            } finally {
-              await browser.close();
-            }
-          }
-
-          async function openTarget(page, url) {
-            console.log(`Opening second super topic: ${url}`);
-            await page.goto(url, { waitUntil: "domcontentloaded" });
-            await page.waitForLoadState("networkidle").catch(() => {});
-          }
-
-          async function signInIfNeeded(page, url) {
-            const alreadySigned = page.getByText(/\u5df2\u7b7e\u5230|\u8fde\u7eed\u7b7e\u5230|\u4eca\u65e5\u5df2\u7b7e/).first();
-            if (await visible(alreadySigned)) {
-              console.log(`${url}: already signed`);
-              return;
-            }
-
-            const signInText = "\u7b7e\u5230";
-            const signButtons = [
-              page.getByRole("button", { name: /\u7b7e\u5230/ }).first(),
-              page.getByText(/^\u7b7e\u5230$/).first(),
-              page.locator(`[aria-label*="${signInText}"]`).first(),
-              page.locator(`text=${signInText}`).first()
-            ];
-
-            for (const button of signButtons) {
-              if (await visible(button)) {
-                await button.click();
-                await page.waitForTimeout(2000);
-                console.log(`${url}: sign action clicked`);
-                return;
-              }
-            }
-
-            console.log(`${url}: sign button not found, continuing to comments`);
-          }
-
-          async function commentOnFourPosts(page, comments) {
-            const postLinks = await collectPostLinks(page);
-            if (postLinks.length < 4) {
-              throw new Error(`Only found ${postLinks.length} candidate posts.`);
-            }
-
-            let count = 0;
-            for (const href of postLinks) {
-              if (count >= 4) {
-                break;
-              }
-
-              const comment = comments[count];
-              console.log(`Commenting ${count + 1}/4: ${href}`);
-              const postPage = await page.context().newPage();
-              postPage.setDefaultTimeout(20000);
-
-              try {
-                await postPage.goto(href, { waitUntil: "domcontentloaded" });
-                await postPage.waitForLoadState("networkidle").catch(() => {});
-                await tryBecomeFirstComment(postPage, comment);
-                count += 1;
-                await postPage.waitForTimeout(3000);
-              } finally {
-                await postPage.close();
-              }
-            }
-
-            if (count < 4) {
-              throw new Error(`Only commented on ${count} posts.`);
-            }
-          }
-
-          async function collectPostLinks(page) {
-            const seen = new Set();
-            for (let round = 0; round < 6 && seen.size < 12; round += 1) {
-              const links = await page.locator('a[href*="/status/"], a[href*="/detail/"]').evaluateAll((anchors) => {
-                return anchors
-                  .map((anchor) => anchor.href)
-                  .filter(Boolean);
-              }).catch(() => []);
-
-              for (const href of links) {
-                if (/\/(status|detail)\//.test(href)) {
-                  seen.add(href.split("?")[0]);
-                }
-              }
-
-              await page.mouse.wheel(0, 1400);
-              await page.waitForTimeout(1500);
-            }
-
-            return Array.from(seen);
-          }
-
-          async function tryBecomeFirstComment(page, comment) {
-            const commentText = "\u8bc4\u8bba";
-            const inputSelectors = [
-              'textarea[placeholder*="\u8bc4\u8bba"]',
-              "textarea",
-              '[contenteditable="true"]'
-            ];
-
-            const commentEntry = page.getByText(/^(\u8bc4\u8bba|0|\u62a2\u9996\u8bc4|\u5feb\u6765\u62a2\u9996\u8bc4)$/).first();
-            if (await visible(commentEntry)) {
-              await commentEntry.click().catch(() => {});
-              await page.waitForTimeout(1000);
-            }
-
-            let input = null;
-            for (const selector of inputSelectors) {
-              const candidate = page.locator(selector).first();
-              if (await visible(candidate)) {
-                input = candidate;
-                break;
-              }
-            }
-
-            if (!input) {
-              const fallbackEntry = page.locator(`[aria-label*="${commentText}"], text=${commentText}`).first();
-              if (await visible(fallbackEntry)) {
-                await fallbackEntry.click();
-                await page.waitForTimeout(1000);
-              }
-              for (const selector of inputSelectors) {
-                const candidate = page.locator(selector).first();
-                if (await visible(candidate)) {
-                  input = candidate;
-                  break;
-                }
-              }
-            }
-
-            if (!input) {
-              throw new Error("Could not find comment input.");
-            }
-
-            await input.fill(comment).catch(async () => {
-              await input.click();
-              await page.keyboard.type(comment);
-            });
-
-            const sendButtons = [
-              page.getByRole("button", { name: /\u53d1\u9001|\u8bc4\u8bba|\u53d1\u5e03/ }).first(),
-              page.getByText(/^\u53d1\u9001$|^\u8bc4\u8bba$|^\u53d1\u5e03$/).first()
-            ];
-
-            for (const button of sendButtons) {
-              if (await visible(button)) {
-                await button.click();
-                console.log("Comment submitted.");
-                return;
-              }
-            }
-
-            throw new Error("Could not find send button.");
-          }
-
-          function parseCookies(text) {
-            return text
-              .split(";")
-              .map((item) => item.trim())
-              .filter(Boolean)
-              .map((item) => {
-                const index = item.indexOf("=");
-                return {
-                  name: item.slice(0, index),
-                  value: item.slice(index + 1),
-                  domain: ".weibo.com",
-                  path: "/"
-                };
-              })
-              .filter((cookie) => cookie.name && cookie.value);
-          }
-
-          async function visible(locator) {
-            try {
-              return await locator.isVisible({ timeout: 1500 });
-            } catch {
-              return false;
-            }
-          }
-
-          function splitList(value) {
-            return (value || "")
-              .split(/\|\||\r?\n|,/)
-              .map((item) => item.trim())
-              .filter(Boolean);
-          }
-          NODE
+      - name: Upload sign artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weibo-sign-report
+          path: artifacts/
