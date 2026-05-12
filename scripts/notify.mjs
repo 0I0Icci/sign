@@ -50,7 +50,7 @@ async function buildReport() {
 async function buildSignReport() {
   const report = await readJson("artifacts/sign-report.json", { results: [] });
   const rows = (report.results || []).map((item) => ({
-    label: item.status === "signed" ? "签到成功" : "已签到",
+    label: `${item.account || "default"} - ${item.status === "signed" ? "签到成功" : item.status === "failed" ? "签到失败" : "已签到"}`,
     time: formatShanghai(new Date(item.signedAt || report.generatedAt || Date.now())),
     url: item.url || "",
     detail: item.method || ""
