@@ -1,0 +1,23 @@
+name: Email Notification Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  email-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Send test email
+        env:
+          NOTIFY_MODE: test
+          NOTIFY_EMAIL_TO: 2948408582@qq.com
+          SMTP_HOST: smtp.qq.com
+          SMTP_PORT: "465"
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+        run: node scripts/notify.mjs
