@@ -32,8 +32,8 @@ jobs:
       - name: Watch target super topic and comment first
         env:
           WEIBO_COOKIE: ${{ secrets.WEIBO_COOKIE }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
           FIRST_COMMENT_POLL_SECONDS: "5"
         run: node scripts/first-comment-weibo.mjs
 
