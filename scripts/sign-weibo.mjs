@@ -1,46 +1,57 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
 
+const signResults = [];
+
 await main();
 
 async function main() {
   await mkdir("artifacts", { recursive: true });
 
-  const cookieText = process.env.WEIBO_COOKIE || "";
+  const accounts = getAccounts();
   const urls = (process.env.WEIBO_SUPERTOPIC_URLS || "")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
 
-  if (!cookieText) {
-    throw new Error("Missing secret: WEIBO_COOKIE");
+  if (!accounts.length) {
+    throw new Error("Missing secret: set WEIBO_COOKIE or WEIBO_COOKIE_1/2/3...");
   }
   if (!urls.length) {
     throw new Error("Missing secret: WEIBO_SUPERTOPIC_URLS");
   }
 
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({
-    locale: "zh-CN",
-    timezoneId: "Asia/Shanghai",
-    viewport: { width: 1365, height: 900 }
-  });
 
   try {
-    await context.addCookies(parseCookies(cookieText));
-    const page = await context.newPage();
-    page.setDefaultTimeout(20000);
+    for (const account of accounts) {
+      console.log(`Starting sign workflow for account: ${account.label}`);
+      const context = await browser.newContext({
+        locale: "zh-CN",
+        timezoneId: "Asia/Shanghai",
+        viewport: { width: 1365, height: 900 }
+      });
 
-    for (let index = 0; index < urls.length; index += 1) {
-      await signTopic(page, urls[index], index + 1);
+      try {
+        await context.addCookies(parseCookies(account.cookie));
+        const page = await context.newPage();
+        page.setDefaultTimeout(20000);
+
+        for (let index = 0; index < urls.length; index += 1) {
+          await signTopic(page, urls[index], index + 1, account);
+        }
+      } finally {
+        await context.close();
+      }
     }
   } finally {
+    await writeSignReport();
     await browser.close();
   }
 }
 
-async function signTopic(page, url, index) {
-  console.log(`Opening ${url}`);
+async function signTopic(page, url, index, account) {
+  console.log(`[${account.label}] Opening ${url}`);
   await page.goto(url, { waitUntil: "domcontentloaded" });
   await page.waitForLoadState("networkidle").catch(() => {});
   await page.waitForTimeout(2000);
@@ -49,14 +60,17 @@ async function signTopic(page, url, index) {
   console.log(`Current URL: ${page.url()}`);
 
   if (await isLoginPage(page)) {
-    await saveDebug(page, index, "login-required");
-    throw new Error(`${url}: login is not valid. Update WEIBO_COOKIE.`);
+    await saveDebug(page, index, `${account.safeLabel}-login-required`);
+    recordSign(url, "failed", "login required", account);
+    console.log(`[${account.label}] ${url}: login is not valid. Update this account cookie.`);
+    return;
   }
 
   const topButtonText = await getTopSignButtonText(page);
   console.log(`${url}: top sign button text: ${topButtonText || "(not found)"}`);
   if (isSignedButtonText(topButtonText)) {
     console.log(`${url}: already signed by top button state`);
+    recordSign(url, "already-signed", "top button already signed", account);
     return;
   }
 
@@ -65,6 +79,7 @@ async function signTopic(page, url, index) {
     console.log(`${url}: top sign button text after click: ${afterClickText || "(not found)"}`);
     if (isSignedButtonText(afterClickText) || await hasSignedState(page)) {
       console.log(`${url}: signed successfully by top sign button`);
+      recordSign(url, "signed", "top sign button", account);
       return;
     }
     console.log(`${url}: top sign button was clicked, but signed state was not confirmed`);
@@ -76,6 +91,7 @@ async function signTopic(page, url, index) {
     const apiResult = await signByApi(page, url, topicId);
     if (apiResult.ok) {
       console.log(`${url}: ${apiResult.message}`);
+      recordSign(url, apiResult.alreadySigned ? "already-signed" : "signed", apiResult.message, account);
       return;
     }
     console.log(`${url}: API sign did not complete: ${apiResult.message}`);
@@ -112,12 +128,53 @@ async function signTopic(page, url, index) {
 
     if (await hasSignedState(page)) {
       console.log(`${url}: signed successfully`);
+      recordSign(url, "signed", "page fallback", account);
       return;
     }
   }
 
   await saveDebug(page, index, "sign-not-confirmed");
-  throw new Error(`${url}: sign action was not completed or could not be confirmed.`);
+  recordSign(url, "failed", "sign action was not completed or could not be confirmed", account);
+  console.log(`[${account.label}] ${url}: sign action was not completed or could not be confirmed.`);
+}
+
+function recordSign(url, status, method, account) {
+  signResults.push({
+    account: account?.label || "default",
+    url,
+    status,
+    method,
+    signedAt: new Date().toISOString()
+  });
+}
+
+function getAccounts() {
+  const labels = (process.env.WEIBO_ACCOUNT_LABELS || "")
+    .split(",")
+    .map((label) => label.trim())
+    .filter(Boolean);
+  const accounts = [];
+
+  for (let index = 1; index <= 20; index += 1) {
+    const cookie = process.env[`WEIBO_COOKIE_${index}`];
+    if (!cookie) continue;
+    const label = labels[index - 1] || `account-${index}`;
+    accounts.push({
+      label,
+      safeLabel: label.replace(/[^a-z0-9_-]/gi, "_"),
+      cookie
+    });
+  }
+
+  if (!accounts.length && process.env.WEIBO_COOKIE) {
+    accounts.push({
+      label: labels[0] || "default",
+      safeLabel: (labels[0] || "default").replace(/[^a-z0-9_-]/gi, "_"),
+      cookie: process.env.WEIBO_COOKIE
+    });
+  }
+
+  return accounts;
 }
 
 async function clickTopSignButton(page, url) {
@@ -302,5 +359,12 @@ async function visible(locator) {
   } catch {
     return false;
   }
+}
+
+async function writeSignReport() {
+  await writeFile("artifacts/sign-report.json", JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    results: signResults
+  }, null, 2)).catch(() => {});
 }
 
