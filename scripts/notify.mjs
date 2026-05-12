@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 const MODE = process.env.NOTIFY_MODE || "auto";
@@ -13,77 +13,80 @@ await main();
 
 async function main() {
   if (!SMTP_USER || !SMTP_PASS) {
-    console.log("SMTP_USER or SMTP_PASS is missing; skip email notification.");
-    return;
+    throw new Error("SMTP_USER or SMTP_PASS is missing. Use a QQ Mail SMTP authorization code, not the QQ password.");
   }
 
   const report = await buildReport();
-  const html = renderHtml(report);
   await sendMail({
     to: TO,
     subject: report.subject,
-    html,
+    html: renderHtml(report),
     images: report.images
   });
 }
 
 async function buildReport() {
+  if (MODE === "test") {
+    return {
+      subject: `微博自动化测试邮件 ${formatShanghai(new Date())}`,
+      title: "微博自动化测试邮件",
+      summary: "如果你看到这封邮件，说明 GitHub Actions 到 QQ 邮箱的 SMTP 通知链路已经打通。",
+      rows: [],
+      images: []
+    };
+  }
+
   if (MODE === "sign") {
     return buildSignReport();
   }
+
   if (MODE === "first-comment") {
     return buildFirstCommentReport();
   }
 
-  const hasFirstComment = await exists("artifacts/first-comment-report.json");
-  return hasFirstComment ? buildFirstCommentReport() : buildSignReport();
+  return (await exists("artifacts/first-comment-report.json")) ? buildFirstCommentReport() : buildSignReport();
 }
 
 async function buildSignReport() {
   const report = await readJson("artifacts/sign-report.json", { results: [] });
-  const rows = report.results || [];
+  const rows = (report.results || []).map((item) => ({
+    label: item.status === "signed" ? "签到成功" : "已签到",
+    time: formatShanghai(new Date(item.signedAt || report.generatedAt || Date.now())),
+    url: item.url || "",
+    detail: item.method || ""
+  }));
+
   return {
     subject: `微博签到汇报 ${formatShanghai(new Date())}`,
     title: "微博签到汇报",
-    summary: rows.length ? `本次记录 ${rows.length} 个超话签到结果。` : "本次没有记录到签到结果。",
-    rows: rows.map((item) => ({
-      label: item.status === "signed" ? "签到成功" : "已签到",
-      time: formatShanghai(new Date(item.signedAt || report.generatedAt || Date.now())),
-      url: item.url,
-      detail: item.method || ""
-    })),
+    summary: rows.length ? `本次记录 ${rows.length} 个超话签到结果。` : "本次没有记录到签到结果，请查看 Actions 日志。",
+    rows,
     images: []
   };
 }
 
 async function buildFirstCommentReport() {
   const report = await readJson("artifacts/first-comment-report.json", { comments: [] });
-  const comments = report.comments || [];
   const images = [];
-
-  const rows = [];
-  for (const item of comments) {
+  const rows = (report.comments || []).map((item) => {
     const cid = `comment-${item.index}`;
     if (item.squareScreenshot) {
-      images.push({
-        cid,
-        path: path.join("artifacts", item.squareScreenshot)
-      });
+      images.push({ cid, path: path.join("artifacts", item.squareScreenshot) });
     }
 
-    rows.push({
+    return {
       label: `首评 ${item.index}`,
       time: formatShanghai(new Date(item.capturedAt || report.generatedAt || Date.now())),
-      url: item.href,
-      detail: item.comment,
+      url: item.href || "",
+      detail: item.comment || "",
       cid: item.squareScreenshot ? cid : ""
-    });
-  }
+    };
+  });
 
   return {
-    subject: `微博抢首评汇报 ${comments.length}条 ${formatShanghai(new Date())}`,
+    subject: `微博抢首评汇报 ${rows.length}条 ${formatShanghai(new Date())}`,
     title: "微博抢首评汇报",
-    summary: comments.length ? `本次成功评论 ${comments.length} 条。` : "本次没有成功评论。",
+    summary: rows.length ? `本次成功评论 ${rows.length} 条。` : "本次没有成功评论，请查看 Actions artifact。",
     rows,
     images
   };
@@ -97,7 +100,7 @@ function renderHtml(report) {
         <h2 style="font-size:16px;margin:0 0 8px;">${escapeHtml(item.label)}</h2>
         <p style="margin:4px 0;color:#555;">时间：${escapeHtml(item.time)}</p>
         <p style="margin:4px 0;"><a href="${escapeHtml(item.url)}">${escapeHtml(item.url)}</a></p>
-        <p style="margin:8px 0;line-height:1.6;">${escapeHtml(item.detail)}</p>
+        <p style="margin:8px 0;line-height:1.7;">${escapeHtml(item.detail)}</p>
         ${image}
       </section>
     `;
@@ -117,16 +120,15 @@ function renderHtml(report) {
 }
 
 async function sendMail({ to, subject, html, images }) {
-  const boundary = `mixed-${Date.now()}`;
-  const relatedBoundary = `related-${Date.now()}`;
+  const boundary = `related-${Date.now()}`;
   const chunks = [
     `From: ${SMTP_FROM}`,
     `To: ${to}`,
     `Subject: ${encodeMimeWord(subject)}`,
     "MIME-Version: 1.0",
-    `Content-Type: multipart/related; boundary="${relatedBoundary}"`,
+    `Content-Type: multipart/related; boundary="${boundary}"`,
     "",
-    `--${relatedBoundary}`,
+    `--${boundary}`,
     'Content-Type: text/html; charset="UTF-8"',
     "Content-Transfer-Encoding: base64",
     "",
@@ -138,8 +140,9 @@ async function sendMail({ to, subject, html, images }) {
     if (!bytes) {
       continue;
     }
+
     chunks.push(
-      `--${relatedBoundary}`,
+      `--${boundary}`,
       "Content-Type: image/png",
       "Content-Transfer-Encoding: base64",
       `Content-ID: <${image.cid}>`,
@@ -149,7 +152,7 @@ async function sendMail({ to, subject, html, images }) {
     );
   }
 
-  chunks.push(`--${relatedBoundary}--`, "");
+  chunks.push(`--${boundary}--`, "");
   await smtpSend(chunks.join("\r\n"));
   console.log(`Notification email sent to ${to}.`);
 }
@@ -159,7 +162,7 @@ async function smtpSend(message) {
   const socket = tls.connect(SMTP_PORT, SMTP_HOST, { servername: SMTP_HOST });
 
   await expect(socket, 220);
-  await command(socket, `EHLO github-actions`, 250);
+  await command(socket, "EHLO github-actions", 250);
   await command(socket, "AUTH LOGIN", 334);
   await command(socket, Buffer.from(SMTP_USER).toString("base64"), 334);
   await command(socket, Buffer.from(SMTP_PASS).toString("base64"), 235);
