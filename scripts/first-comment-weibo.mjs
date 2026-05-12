@@ -6,8 +6,8 @@ const TARGET_TOPIC = process.env.FIRST_COMMENT_TOPIC_NAME || "华晨宇超话";
 const MAX_COMMENTS = Number(process.env.FIRST_COMMENT_MAX || "4");
 const POLL_SECONDS = Number(process.env.FIRST_COMMENT_POLL_SECONDS || "3");
 const MAX_ATTEMPTS_PER_POST = Number(process.env.FIRST_COMMENT_MAX_ATTEMPTS_PER_POST || "2");
-const USE_AI_COMMENTS = process.env.OPENAI_API_KEY ? true : false;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "deepseek";
+const USE_AI_COMMENTS = process.env.DEEPSEEK_API_KEY ? true : false;
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
 
 const SAMPLE_COMMENTS = [
   "小时候听老人常说“冬做超like夏不伤，演唱会有票我不慌”，所有title中超like最为正宗。我们的老祖宗认为冬季是个寒冷的季节，所以要在家里多做@华晨宇yu 超like为未来一年的生活打下好基础",
@@ -374,27 +374,37 @@ async function makeComment(postText, index) {
     '只返回 JSON，例如 {"comment":"..."}。'
   ].join("\n");
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model: OPENAI_MODEL,
-      input: prompt,
+      model: DEEPSEEK_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: "你是一个会写微博粉丝超话评论的中文文案助手。只输出用户要求的 JSON。"
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
       temperature: 0.9,
-      max_output_tokens: 500
+      max_tokens: 500,
+      response_format: { type: "json_object" }
     })
   });
 
   const body = await response.text();
   if (!response.ok) {
-    console.log(`OpenAI generation failed: ${response.status} ${body}`);
+    console.log(`DeepSeek generation failed: ${response.status} ${body}`);
     return SAMPLE_COMMENTS[(index - 1) % SAMPLE_COMMENTS.length];
   }
 
-  const outputText = JSON.parse(body).output_text || extractOutputText(JSON.parse(body));
+  const outputText = JSON.parse(body)?.choices?.[0]?.message?.content || "";
   const parsed = parseJsonObject(outputText);
   const comment = String(parsed.comment || "").trim();
   if (comment.length < 10 || comment.length > 240 || tooSimilarToSample(comment)) {
@@ -402,14 +412,6 @@ async function makeComment(postText, index) {
   }
 
   return comment;
-}
-
-function extractOutputText(data) {
-  return (data.output || [])
-    .flatMap((item) => item.content || [])
-    .map((content) => content.text || "")
-    .join("\n")
-    .trim();
 }
 
 function parseJsonObject(text) {
